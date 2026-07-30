@@ -15,75 +15,64 @@ app.use(express.static(__dirname + '/public'));
 
 const devices = new Map();
 
+app.get('/api/devices', (req, res) => {
+  const out = {};
+  for (const [k, v] of devices) out[k] = v.length > 0 ? v[v.length-1] : null;
+  res.json(out);
+});
+
 function mqtt_connect() {
   try {
-    const host = process.env.MQTT_HOST || 'localhost';
-    const port = process.env.MQTT_PORT || '1883';
+    const host = process.env.MQTT_HOST;
+    const port = process.env.MQTT_PORT;
+    if (!host || !port) {
+      console.log('MQTT not configured, running without broker');
+      return;
+    }
     const proto = port === '8883' ? 'mqtts' : 'mqtt';
     const url = proto + '://' + host + ':' + port;
-
     const opts = {
-      username: process.env.MQTT_USERNAME || undefined,
-      password: process.env.MQTT_PASSWORD || undefined,
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
       reconnectPeriod: 5000,
       clientId: 'gas_dashboard_' + Math.random().toString(36).slice(2, 8),
       rejectUnauthorized: false,
     };
-
     const client = mqtt.connect(url, opts);
-
     client.on('connect', () => {
-      console.log('MQTT connected to ' + url);
-      client.subscribe(process.env.MQTT_TOPIC || 'gas_monitor/+/status', { qos: 0 });
+      console.log('MQTT connected');
+      client.subscribe(process.env.MQTT_TOPIC || 'gas_monitor/+/status');
     });
-
     client.on('message', (topic, raw) => {
       try {
-        const parts = topic.split('/');
-        const deviceId = parts.length >= 3 ? parts[1] : 'unknown';
+        const deviceId = topic.split('/')[1] || 'unknown';
         const data = JSON.parse(raw.toString());
         data._device = deviceId;
         data._time = Date.now();
         if (!devices.has(deviceId)) devices.set(deviceId, []);
-        const history = devices.get(deviceId);
-        history.push(data);
-        if (history.length > 200) history.shift();
+        const h = devices.get(deviceId);
+        h.push(data);
+        if (h.length > 200) h.shift();
         io.emit('data', data);
-      } catch (e) {
-        console.error('Parse error:', e.message);
-      }
+      } catch (e) { console.error('Parse:', e.message); }
     });
-
-    client.on('error', (e) => console.error('MQTT error:', e.message));
+    client.on('error', (e) => console.error('MQTT err:', e.message));
     client.on('close', () => {
-      console.log('MQTT disconnected, reconnecting...');
+      console.log('MQTT closed, reconnecting in 5s...');
       setTimeout(mqtt_connect, 5000);
     });
-
     return client;
   } catch (e) {
-    console.error('MQTT connect error:', e.message);
-    setTimeout(mqtt_connect, 5000);
+    console.error('MQTT fail:', e.message);
+    setTimeout(mqtt_connect, 10000);
   }
 }
 
 mqtt_connect();
 
 io.on('connection', (socket) => {
-  for (const [deviceId, history] of devices) {
-    socket.emit('history', { deviceId, data: history });
-  }
-});
-
-app.get('/api/devices', (req, res) => {
-  const result = {};
-  for (const [id, history] of devices) {
-    result[id] = history.length > 0 ? history[history.length - 1] : null;
-  }
-  res.json(result);
+  for (const [id, h] of devices) socket.emit('history', { deviceId: id, data: h });
 });
 
 const PORT = parseInt(process.env.PORT || '3000');
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('Dashboard: http://localhost:' + PORT);
-});
+server.listen(PORT, '0.0.0.0', () => console.log('Dashboard running on port ' + PORT));
