@@ -1,0 +1,19 @@
+{
+  "name": "gas-dashboard",
+  "version": "1.0.0",
+  "description": "Real-time multi-device gas monitor dashboard",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "mqtt": "^5.10.4",
+    "socket.io": "^4.8.1"
+  }
+}

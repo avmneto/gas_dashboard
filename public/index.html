@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gas Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; }
+header { background: #1e293b; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+header h1 { font-size: 1.25rem; font-weight: 600; }
+.device-tabs { display: flex; gap: 4px; margin-left: auto; }
+.device-tab { padding: 6px 14px; border-radius: 6px; border: 1px solid #334155; background: transparent; color: #94a3b8; cursor: pointer; font-size: 0.85rem; }
+.device-tab.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+.status-bar { display: flex; gap: 16px; padding: 12px 24px; background: #1e293b; border-top: 1px solid #334155; font-size: 0.85rem; color: #94a3b8; }
+.status-bar .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.dot.green { background: #22c55e; }
+.dot.red { background: #ef4444; }
+.dot.orange { background: #f59e0b; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; padding: 16px 24px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.card { background: #1e293b; border-radius: 10px; padding: 16px; border: 1px solid #334155; }
+.card h3 { font-size: 0.8rem; text-transform: uppercase; color: #64748b; margin-bottom: 8px; letter-spacing: 0.05em; }
+.card .value { font-size: 1.5rem; font-weight: 700; color: #f8fafc; }
+.card .value .unit { font-size: 0.85rem; color: #64748b; font-weight: 400; margin-left: 4px; }
+.card canvas { max-height: 200px; }
+.status-grid { display: flex; gap: 12px; flex-wrap: wrap; }
+.status-item { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: #0f172a; border-radius: 6px; font-size: 0.85rem; }
+.status-item .label { color: #64748b; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🔬 Gas Monitor</h1>
+  <div class="device-tabs" id="deviceTabs"></div>
+</header>
+
+<div class="status-bar">
+  <span id="connectionStatus"><span class="dot orange"></span>Connectando...</span>
+  <span id="deviceCount"></span>
+  <span id="lastUpdate"></span>
+</div>
+
+<div id="dashboard"></div>
+
+<script>
+const socket = io();
+const devices = {};
+let activeDevice = null;
+
+socket.on('connect', () => {
+  document.getElementById('connectionStatus').innerHTML = '<span class="dot green"></span>Conectado';
+});
+
+socket.on('disconnect', () => {
+  document.getElementById('connectionStatus').innerHTML = '<span class="dot red"></span>Desconectado';
+});
+
+socket.on('history', ({ deviceId, data }) => {
+  if (!devices[deviceId]) {
+    devices[deviceId] = { data: [], charts: {} };
+  }
+  devices[deviceId].data = data;
+  updateDeviceList();
+  if (!activeDevice) switchDevice(deviceId);
+});
+
+socket.on('data', (d) => {
+  const id = d._device;
+  if (!devices[id]) {
+    devices[id] = { data: [], charts: {} };
+    updateDeviceList();
+  }
+  devices[id].data.push(d);
+  if (devices[id].data.length > 200) devices[id].data.shift();
+  if (activeDevice === id) updateDashboard(id);
+  document.getElementById('lastUpdate').textContent = 'Último: ' + new Date(d._time).toLocaleTimeString();
+});
+
+function updateDeviceList() {
+  const ids = Object.keys(devices);
+  document.getElementById('deviceCount').textContent = ids.length + ' dispositivo(s)';
+  const tabs = document.getElementById('deviceTabs');
+  tabs.innerHTML = ids.map(id =>
+    `<button class="device-tab${activeDevice === id ? ' active' : ''}" onclick="switchDevice('${id}')">${id}</button>`
+  ).join('');
+}
+
+function switchDevice(id) {
+  activeDevice = id;
+  updateDeviceList();
+  renderDashboard(id);
+}
+
+function renderDashboard(id) {
+  const data = devices[id].data;
+  if (!data || data.length === 0) return;
+  const latest = data[data.length - 1];
+
+  const labels = data.map(d => new Date(d._time).toLocaleTimeString());
+  const s1 = data.map(d => d.s1);
+  const s2 = data.map(d => d.s2);
+  const s3 = data.map(d => d.s3);
+  const s4 = data.map(d => d.s4);
+
+  const running = latest.run;
+
+  const html = `
+    <div class="status-grid" style="padding: 8px 24px 0">
+      <div class="status-item"><span class="dot ${running ? 'green' : 'red'}"></span> <span class="label">Status:</span> ${running ? 'Rodando' : 'Parado'}</div>
+      <div class="status-item"><span class="label">Runtime:</span> ${latest.rt} min</div>
+      <div class="status-item"><span class="label">Pulsos:</span> ${latest.pu}</div>
+      <div class="status-item"><span class="label">Hold:</span> ${latest.ho}s</div>
+      <div class="status-item"><span class="label">Preset:</span> ${latest.pr}</div>
+      <div class="status-item"><span class="label">Alarme:</span> ${latest.al}</div>
+      <div class="status-item"><span class="label">Timers:</span> ${latest.t.join('/')}s</div>
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Sensor 1</h3><div class="value">${latest.s1}</div><canvas id="ch-s1"></canvas></div>
+      <div class="card"><h3>Sensor 2</h3><div class="value">${latest.s2}</div><canvas id="ch-s2"></canvas></div>
+      <div class="card"><h3>Sensor 3</h3><div class="value">${latest.s3}</div><canvas id="ch-s3"></canvas></div>
+      <div class="card"><h3>Sensor 4</h3><div class="value">${latest.s4.toFixed(3)}</div><canvas id="ch-s4"></canvas></div>
+    </div>
+  `;
+  document.getElementById('dashboard').innerHTML = html;
+
+  // Destroy old charts
+  for (const key in devices[id].charts) {
+    if (devices[id].charts[key]) devices[id].charts[key].destroy();
+  }
+
+  const chartOpts = (id_, label, data, color) => ({
+    type: 'line',
+    data: { labels, datasets: [{ label, data, borderColor: color, backgroundColor: color + '22', fill: true, tension: 0.3, pointRadius: 0 }] },
+    options: { responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: { legend: { display: false } },
+      scales: { x: { display: false }, y: { ticks: { color: '#64748b' } } }
+    }
+  });
+
+  devices[id].charts.s1 = new Chart(document.getElementById('ch-s1'), chartOpts(id, 'S1', s1, '#3b82f6'));
+  devices[id].charts.s2 = new Chart(document.getElementById('ch-s2'), chartOpts(id, 'S2', s2, '#22c55e'));
+  devices[id].charts.s3 = new Chart(document.getElementById('ch-s3'), chartOpts(id, 'S3', s3, '#f59e0b'));
+  devices[id].charts.s4 = new Chart(document.getElementById('ch-s4'), chartOpts(id, 'S4', s4, '#ef4444'));
+}
+
+function updateDashboard(id) {
+  const data = devices[id].data;
+  if (data.length < 2) return renderDashboard(id);
+  const latest = data[data.length - 1];
+  const labels = data.map(d => new Date(d._time).toLocaleTimeString());
+
+  // Update charts without full re-render (just update data)
+  for (const key of ['s1', 's2', 's3', 's4']) {
+    const ch = devices[id].charts[key];
+    if (!ch) continue;
+    const idx = key === 's1' ? 's1' : key === 's2' ? 's2' : key === 's3' ? 's3' : 's4';
+    const values = data.map(d => d[idx]);
+    ch.data.labels = labels;
+    ch.data.datasets[0].data = values;
+    ch.update('none');
+  }
+
+  // Update status values
+  document.querySelectorAll('.card canvas').forEach((canvas, i) => {
+    const vals = [latest.s1, latest.s2, latest.s3, latest.s4.toFixed(3)];
+    const parent = canvas.parentElement;
+    const valueEl = parent.querySelector('.value');
+    if (valueEl) valueEl.textContent = vals[i];
+  });
+
+  document.getElementById('lastUpdate').textContent = 'Último: ' + new Date(latest._time).toLocaleTimeString();
+}
+</script>
+</body>
+</html>
