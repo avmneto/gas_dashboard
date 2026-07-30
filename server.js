@@ -17,10 +17,12 @@ const devices = new Map();
 
 function mqtt_connect() {
   try {
+    const host = process.env.MQTT_HOST || 'localhost';
+    const port = process.env.MQTT_PORT || '1883';
+    const proto = port === '8883' ? 'mqtts' : 'mqtt';
+    const url = proto + '://' + host + ':' + port;
+
     const opts = {
-      host: process.env.MQTT_HOST || 'localhost',
-      port: parseInt(process.env.MQTT_PORT || '1883'),
-      protocol: process.env.MQTT_PORT === '8883' ? 'mqtts' : 'mqtt',
       username: process.env.MQTT_USERNAME || undefined,
       password: process.env.MQTT_PASSWORD || undefined,
       reconnectPeriod: 5000,
@@ -28,10 +30,10 @@ function mqtt_connect() {
       rejectUnauthorized: false,
     };
 
-    const client = mqtt.connect(opts);
+    const client = mqtt.connect(url, opts);
 
     client.on('connect', () => {
-      console.log('MQTT connected to ' + opts.host + ':' + opts.port);
+      console.log('MQTT connected to ' + url);
       client.subscribe(process.env.MQTT_TOPIC || 'gas_monitor/+/status', { qos: 0 });
     });
 
