@@ -106,23 +106,28 @@ function renderDashboard(id) {
   const s3 = data.map(d => d.s3);
   const s4 = data.map(d => d.s4);
 
+  // Compativel com dois payloads: o do alarme_esp32 (evento + s1..s4)
+  // e o antigo do CNC (run/rt/pu/ho/pr/al/t[]). Campo ausente vira '-'.
   const running = latest.run;
+  const evento = latest.evento || '';
+  const emAlarme = /TRIGGERED|ALARM_ON|ALARME/.test(evento);
+  const timers = Array.isArray(latest.t) ? latest.t.join('/') : '-';
 
   const html = `
     <div class="status-grid" style="padding: 8px 24px 0">
-      <div class="status-item"><span class="dot ${running ? 'green' : 'red'}"></span> <span class="label">Status:</span> ${running ? 'Rodando' : 'Parado'}</div>
-      <div class="status-item"><span class="label">Runtime:</span> ${latest.rt} min</div>
-      <div class="status-item"><span class="label">Pulsos:</span> ${latest.pu}</div>
-      <div class="status-item"><span class="label">Hold:</span> ${latest.ho}s</div>
-      <div class="status-item"><span class="label">Preset:</span> ${latest.pr}</div>
-      <div class="status-item"><span class="label">Alarme:</span> ${latest.al}</div>
-      <div class="status-item"><span class="label">Timers:</span> ${latest.t.join('/')}s</div>
+      <div class="status-item" id="statusItem"><span class="dot ${evento ? (emAlarme ? 'red' : 'green') : (running ? 'green' : 'red')}"></span> <span class="label">Status:</span> ${evento || (running ? 'Rodando' : 'Parado')}</div>
+      <div class="status-item"><span class="label">Runtime:</span> ${latest.rt ?? '-'} min</div>
+      <div class="status-item"><span class="label">Pulsos:</span> ${latest.pu ?? '-'}</div>
+      <div class="status-item"><span class="label">Hold:</span> ${latest.ho ?? '-'}s</div>
+      <div class="status-item"><span class="label">Preset:</span> ${latest.pr ?? '-'}</div>
+      <div class="status-item"><span class="label">Alarme:</span> ${latest.al ?? '-'}</div>
+      <div class="status-item"><span class="label">Timers:</span> ${timers}</div>
     </div>
     <div class="grid">
       <div class="card"><h3>Sensor 1</h3><div class="value">${latest.s1}</div><canvas id="ch-s1"></canvas></div>
       <div class="card"><h3>Sensor 2</h3><div class="value">${latest.s2}</div><canvas id="ch-s2"></canvas></div>
       <div class="card"><h3>Sensor 3</h3><div class="value">${latest.s3}</div><canvas id="ch-s3"></canvas></div>
-      <div class="card"><h3>Sensor 4</h3><div class="value">${latest.s4.toFixed(3)}</div><canvas id="ch-s4"></canvas></div>
+      <div class="card"><h3>Sensor 4</h3><div class="value">${(+latest.s4 || 0).toFixed(3)}</div><canvas id="ch-s4"></canvas></div>
     </div>
   `;
   document.getElementById('dashboard').innerHTML = html;
@@ -166,11 +171,21 @@ function updateDashboard(id) {
 
   // Update status values
   document.querySelectorAll('.card canvas').forEach((canvas, i) => {
-    const vals = [latest.s1, latest.s2, latest.s3, latest.s4.toFixed(3)];
+    const vals = [latest.s1, latest.s2, latest.s3, (+latest.s4 || 0).toFixed(3)];
     const parent = canvas.parentElement;
     const valueEl = parent.querySelector('.value');
     if (valueEl) valueEl.textContent = vals[i];
   });
+
+  // Update status line (antes so era desenhado no render inicial)
+  const stEvento = latest.evento || '';
+  const stAlarme = /TRIGGERED|ALARM_ON|ALARME/.test(stEvento);
+  const statusEl = document.getElementById('statusItem');
+  if (statusEl) {
+    statusEl.innerHTML =
+      `<span class="dot ${stEvento ? (stAlarme ? 'red' : 'green') : (latest.run ? 'green' : 'red')}"></span> ` +
+      `<span class="label">Status:</span> ${stEvento || (latest.run ? 'Rodando' : 'Parado')}`;
+  }
 
   document.getElementById('lastUpdate').textContent = 'Último: ' + new Date(latest._time).toLocaleTimeString();
 }
