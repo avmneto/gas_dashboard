@@ -161,20 +161,33 @@ async function upsertOhlc1m(metric, value, ts = Date.now()) {
 }
 
 function mqtt_connect() {
+  // Backoff exponencial: 5s, 10s, 20s, 40s, max 60s
+  let reconnectDelay = 5000;
+  const maxReconnectDelay = 60000;
+
   const opts = {
     host: process.env.MQTT_HOST || 'localhost',
     port: parseInt(process.env.MQTT_PORT || '1883'),
     protocol: process.env.MQTT_PORT === '8883' ? 'mqtts' : 'mqtt',
     username: process.env.MQTT_USERNAME || undefined,
     password: process.env.MQTT_PASSWORD || undefined,
-    reconnectPeriod: 5000,
+    // reconnectPeriod como função = backoff exponencial (mqtt.js v5+)
+    reconnectPeriod: () => {
+      const delay = reconnectDelay;
+      reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+      return delay;
+    },
     clientId: 'gas_dashboard_' + Math.random().toString(36).slice(2, 8),
+    // Limita pacotes em fila para evitar memory pressure
+    queueQoSZero: true,
+    maxQueueSize: 100,
   };
 
   const client = mqtt.connect(opts);
 
   client.on('connect', () => {
     console.log(`MQTT connected to ${opts.host}:${opts.port}`);
+    reconnectDelay = 5000; // reset backoff on successful connect
     client.subscribe(process.env.MQTT_TOPIC || 'gas_monitor/+/status', { qos: 0 });
   });
 
@@ -224,10 +237,7 @@ function mqtt_connect() {
   });
 
   client.on('error', (e) => console.error('MQTT error:', e.message));
-  client.on('close', () => {
-    console.log('MQTT disconnected, reconnecting...');
-    setTimeout(mqtt_connect, 5000);
-  });
+  // REMOVIDO: client.on('close') com setTimeout manual — a lib já gerencia com reconnectPeriod
 
   return client;
 }
