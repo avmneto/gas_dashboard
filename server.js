@@ -42,16 +42,30 @@ function buildPgConfig(url) {
   // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
 
-  // SNI para pooler: usa PROJECT REF (extraído do direct hostname db.<ref>.supabase.co)
-  // O pooler Supabase espera o project ref como SNI, não o pooler hostname
+  // SNI para pooler: usa DIRECT HOSTNAME (db.<ref>.supabase.co)
+  // O pooler Supabase espera o direct hostname como SNI para identificar o tenant
   let sniHostname = hostname;
   if (isPooler) {
-    // Tenta extrair project ref da env var ou inferir do hostname original
-    // Se DATABASE_URL for pooler, não temos o direct hostname aqui.
-    // Fallback: usa o hostname do pooler mesmo, mas alguns pools precisam do ref.
-    // Para Supabase, o project ref costuma ser a parte antes de .supabase.co no direct.
-    // Se não tiver, usa hostname do pooler.
-    sniHostname = process.env.PG_SNI_HOSTNAME || hostname;
+    // PG_SNI_HOSTNAME pode ser:
+    // - project ref apenas: "lakadqmwjwmwlzqgzofi" → vira "db.lakadqmwjwmwlzqgzofi.supabase.co"
+    // - direct hostname completo: "db.lakadqmwjwmwlzqgzofi.supabase.co"
+    // - pooler hostname (fallback): "aws-0-us-east-1.pooler.supabase.com"
+    const envSni = process.env.PG_SNI_HOSTNAME;
+    if (envSni) {
+      if (envSni.includes('.')) {
+        // Já é hostname completo (contém ponto)
+        sniHostname = envSni;
+      } else {
+        // É project ref → constrói direct hostname
+        sniHostname = `db.${envSni}.supabase.co`;
+      }
+    } else {
+      // Fallback: tenta inferir project ref do pooler hostname se possível
+      // aws-0-us-east-1.pooler.supabase.com → não dá pra inferir
+      // Usa pooler hostname mesmo
+      sniHostname = hostname;
+    }
+    console.log('PG pooler SNI resolvido:', sniHostname);
   }
 
   // SSL config: pooler PRECISA de servername (SNI) para ENOIDENTIFIER
