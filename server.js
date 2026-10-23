@@ -57,10 +57,13 @@ function buildPgConfig(url) {
     ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
     : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
 
-  // USA connectionString original (sem mexer em sslmode) + ssl object com servername
-  // O pg usa a connectionString para host/port/database/user mas aplica nosso ssl object no TLS
+  // Remove sslmode da connection string (deixa só o objeto ssl controlar TLS)
+  const u2 = new URL(url);
+  u2.searchParams.delete('sslmode');
+  const connectionStringNoSslMode = u2.toString();
+
   const config = {
-    connectionString: url,
+    connectionString: connectionStringNoSslMode,
     ssl: isPooler
       ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
       : { rejectUnauthorized: false, checkServerIdentity: () => undefined },
@@ -70,7 +73,7 @@ function buildPgConfig(url) {
     statement_timeout: 15000,
   };
 
-  console.log('PG CONFIG: connectionString + ssl object (pooler=' + isPooler + ')');
+  console.log('PG CONFIG: connectionString (no sslmode) + ssl object (pooler=' + isPooler + ')');
   return config;
 }
 
