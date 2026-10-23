@@ -24,11 +24,8 @@ const TELEGRAM_ENABLED = !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
 const dns = require('dns');
 
 function buildPgConfig(url) {
-  // Garante sslmode=require para Supabase (necessário em alguns ambientes)
+  // Parse URL
   const u = new URL(url);
-  if (!u.searchParams.has('sslmode')) {
-    u.searchParams.set('sslmode', 'require');
-  }
   // Log sanitizado (sem senha)
   const sanitized = u.toString().replace(/:([^:@]+)@/, ':****@');
   console.log('PG target:', sanitized);
@@ -40,42 +37,32 @@ function buildPgConfig(url) {
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
 
   // SNI para pooler: usa DIRECT HOSTNAME (db.<ref>.supabase.co)
-  // O pooler Supabase espera o direct hostname como SNI para identificar o tenant
   let sniHostname = hostname;
   if (isPooler) {
-    // PG_SNI_HOSTNAME pode ser:
-    // - project ref apenas: "lakadqmwjwmwlzqgzofi" → vira "db.lakadqmwjwmwlzqgzofi.supabase.co"
-    // - direct hostname completo: "db.lakadqmwjwmwlzqgzofi.supabase.co"
-    // - pooler hostname (fallback): "aws-0-us-east-1.pooler.supabase.com"
     const envSni = process.env.PG_SNI_HOSTNAME;
     if (envSni) {
-      if (envSni.includes('.')) {
-        // Já é hostname completo (contém ponto)
-        sniHostname = envSni;
-      } else {
-        // É project ref → constrói direct hostname
-        sniHostname = `db.${envSni}.supabase.co`;
-      }
+      sniHostname = envSni.includes('.') ? envSni : `db.${envSni}.supabase.co`;
     } else {
-      // Fallback: tenta inferir project ref do pooler hostname se possível
-      // aws-0-us-east-1.pooler.supabase.com → não dá pra inferir
-      // Usa pooler hostname mesmo
       sniHostname = hostname;
     }
     console.log('PG pooler SNI resolvido:', sniHostname);
   }
 
-  // SSL config: pooler PRECISA de servername (SNI) para ENOIDENTIFIER
-  // checkServerIdentity: () => undefined ignora validação de certificado self-signed
+  // SSL config: SNI para pooler, sem validar certificado (self-signed no pooler)
   const sslConfig = isPooler
-    ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
-    : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
+    ? { rejectUnauthorized: false, servername: sniHostname }
+    : { rejectUnauthorized: false };
 
-  // Retorna config para Pool: usa connectionString original + ssl override
-  // Isso garante que o pg use a connection string para host/port/database/user
-  // mas aplique nosso ssl.servername (SNI) no TLS handshake
+  // Para pooler: usa sslmode=allow na connection string (TLS se disponível, não falha no cert)
+  // Para direct: mantém sslmode=require
+  if (isPooler) {
+    u.searchParams.set('sslmode', 'allow');
+  } else if (!u.searchParams.has('sslmode')) {
+    u.searchParams.set('sslmode', 'require');
+  }
+
   return {
-    connectionString: url,
+    connectionString: u.toString(),
     ssl: sslConfig,
     max: 5,
     connectionTimeoutMillis: 30000,
