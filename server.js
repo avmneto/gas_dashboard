@@ -57,12 +57,18 @@ function buildPgConfig(url) {
   // Para direct: mantém sslmode=require
   if (isPooler) {
     u.searchParams.set('sslmode', 'allow');
+    console.log('PG SSL MODE SET: allow (pooler)');
   } else if (!u.searchParams.has('sslmode')) {
     u.searchParams.set('sslmode', 'require');
+    console.log('PG SSL MODE SET: require (direct)');
   }
 
+  // Log final da connection string para debug
+  const finalUrl = u.toString();
+  console.log('PG FINAL TARGET:', finalUrl.replace(/:([^:@]+)@/, ':****@'));
+
   return {
-    connectionString: u.toString(),
+    connectionString: finalUrl,
     ssl: sslConfig,
     max: 5,
     connectionTimeoutMillis: 30000,
