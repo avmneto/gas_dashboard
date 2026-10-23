@@ -49,9 +49,10 @@ function buildPgConfig(url) {
   }
 
   // SSL config: SNI para pooler, sem validar certificado (self-signed no pooler)
+  // checkServerIdentity: () => undefined força bypass total da validação de certificado
   const sslConfig = isPooler
-    ? { rejectUnauthorized: false, servername: sniHostname }
-    : { rejectUnauthorized: false };
+    ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
+    : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
 
   // Para pooler: usa sslmode=allow na connection string (TLS se disponível, não falha no cert)
   // Para direct: mantém sslmode=require
