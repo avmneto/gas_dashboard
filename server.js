@@ -33,7 +33,6 @@ function buildPgConfig(url) {
   const sanitized = u.toString().replace(/:([^:@]+)@/, ':****@');
   console.log('PG target:', sanitized);
 
-  // Resolve hostname para IPv4 explicitamente (evita ENETUNREACH no Render free)
   const hostname = u.hostname;
   const port = parseInt(u.port || '5432');
   const database = u.pathname.slice(1) || 'postgres';
@@ -50,17 +49,26 @@ function buildPgConfig(url) {
     statement_timeout: 15000,
   };
 
+  // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
+  const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
+
+  // Para pooler: SEMPRE usa hostname (tem IPv4 + precisa SNI no TLS para ENOIDENTIFIER)
+  // Para direct: tenta IPv4, fallback para hostname
+  if (isPooler) {
+    console.log('PG pooler detectado — usando hostname direto (SNI required)');
+    return Promise.resolve({ ...baseConfig, host: hostname, port });
+  }
+
+  // Direct connection: tenta IPv4 explicitamente
   return new Promise((resolve) => {
     dns.lookup(hostname, { family: 4 }, (err, ipv4) => {
       if (err) {
         // ENOTFOUND = sem registro A (só IPv6) → fallback para hostname (usa IPv6 do SO)
-        // ENETUNREACH = IPv6 não roteia → tentar pooler se configurado
         if (err.code === 'ENOTFOUND') {
           console.warn('DNS IPv4 lookup ENOTFOUND (sem registro A), usando hostname direto:', err.message);
           resolve({ ...baseConfig, host: hostname, port });
         } else {
           console.error('DNS IPv4 lookup failed:', err);
-          // Fallback seguro: usa hostname mesmo assim
           resolve({ ...baseConfig, host: hostname, port });
         }
         return;
