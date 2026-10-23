@@ -35,9 +35,6 @@ function buildPgConfig(url) {
 
   const hostname = u.hostname;
   const port = parseInt(u.port || '5432');
-  const database = u.pathname.slice(1) || 'postgres';
-  const user = u.username;
-  const password = u.password;
 
   // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
@@ -73,42 +70,17 @@ function buildPgConfig(url) {
     ? { rejectUnauthorized: false, servername: sniHostname }
     : { rejectUnauthorized: false };
 
-  const baseConfig = {
-    database,
-    user,
-    password,
+  // Retorna config para Pool: usa connectionString original + ssl override
+  // Isso garante que o pg use a connection string para host/port/database/user
+  // mas aplique nosso ssl.servername (SNI) no TLS handshake
+  return {
+    connectionString: url,
     ssl: sslConfig,
     max: 5,
     connectionTimeoutMillis: 30000,
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
   };
-
-  // Para pooler: SEMPRE usa hostname (tem IPv4 + SNI no TLS)
-  // Para direct: tenta IPv4, fallback para hostname
-  if (isPooler) {
-    console.log('PG pooler detectado — usando hostname direto (SNI:', sniHostname + ')');
-    return Promise.resolve({ ...baseConfig, host: hostname, port });
-  }
-
-  // Direct connection: tenta IPv4 explicitamente
-  return new Promise((resolve) => {
-    dns.lookup(hostname, { family: 4 }, (err, ipv4) => {
-      if (err) {
-        // ENOTFOUND = sem registro A (só IPv6) → fallback para hostname (usa IPv6 do SO)
-        if (err.code === 'ENOTFOUND') {
-          console.warn('DNS IPv4 lookup ENOTFOUND (sem registro A), usando hostname direto:', err.message);
-          resolve({ ...baseConfig, host: hostname, port });
-        } else {
-          console.error('DNS IPv4 lookup failed:', err);
-          resolve({ ...baseConfig, host: hostname, port });
-        }
-        return;
-      }
-      console.log('PG resolved IPv4:', ipv4);
-      resolve({ ...baseConfig, host: ipv4, port });
-    });
-  });
 }
 
 // Inicialização assíncrona do pool
@@ -119,7 +91,7 @@ async function initPgPool() {
     return;
   }
   try {
-    const config = await buildPgConfig(process.env.DATABASE_URL);
+    const config = buildPgConfig(process.env.DATABASE_URL);
     pgPool = new Pool(config);
     pgPool.on('error', (e) => console.error('PG pool error:', e));
     console.log('Postgres pool initialized');
