@@ -38,21 +38,27 @@ function buildPgConfig(url) {
   const database = u.pathname.slice(1) || 'postgres';
   const user = u.username;
   const password = u.password;
+
+  // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
+  const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
+
+  // SSL config: pooler PRECISA de servername (SNI) para ENOIDENTIFIER
+  const sslConfig = isPooler
+    ? { rejectUnauthorized: false, servername: hostname }
+    : { rejectUnauthorized: false };
+
   const baseConfig = {
     database,
     user,
     password,
-    ssl: { rejectUnauthorized: false },
+    ssl: sslConfig,
     max: 5,
     connectionTimeoutMillis: 30000,
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
   };
 
-  // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
-  const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
-
-  // Para pooler: SEMPRE usa hostname (tem IPv4 + precisa SNI no TLS para ENOIDENTIFIER)
+  // Para pooler: SEMPRE usa hostname (tem IPv4 + SNI no TLS)
   // Para direct: tenta IPv4, fallback para hostname
   if (isPooler) {
     console.log('PG pooler detectado — usando hostname direto (SNI required)');
