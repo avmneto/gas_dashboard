@@ -51,6 +51,50 @@ const socket = io();
 const devices = {};
 let activeDevice = null;
 
+// Configuração dos sensores: título, unidade, formato e escala do eixo Y.
+// y: escala fixa | null = automática | minSpan = amplitude mínima do eixo
+// (evita oscilação visual de ruído em valores pequenos).
+// zero: sensor com defeito — medição ignorada e valor mantido zerado.
+const SENSORS = [
+  { key: 's1', title: 'Sensor 1 — Pureza',          unit: '%',     color: '#3b82f6', fmt: v => num(v, 1), y: { min: 20, max: 100 } },
+  { key: 's2', title: 'Sensor 2 — Fluxo',           unit: 'L/min', color: '#22c55e', fmt: v => num(v, 1), y: null },
+  { key: 's3', title: 'Sensor 3 — Ponto de Orvalho', unit: '°C',   color: '#f59e0b', fmt: () => '0',      y: { min: -80, max: 0 }, zero: true },
+  { key: 's4', title: 'Sensor 4 — Pressão',         unit: 'bar',   color: '#ef4444', fmt: v => num(v, 3), y: null, minSpan: 1 }
+];
+
+function num(v, d) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(d) : '-';
+}
+
+// Extrai a série de um sensor, aplicando as regras da configuração.
+function series(data, cfg) {
+  if (cfg.zero) return data.map(() => 0);
+  return data.map(d => {
+    const v = Number(d[cfg.key]);
+    return Number.isFinite(v) ? v : null;
+  });
+}
+
+// Escala Y automática com amplitude mínima (minSpan).
+function autoY(values, minSpan) {
+  const fin = values.filter(v => v !== null && Number.isFinite(v));
+  if (!fin.length) return {};
+  let lo = Math.min(...fin), hi = Math.max(...fin);
+  if (lo === hi) { lo -= minSpan ? minSpan / 2 : 0.5; hi += minSpan ? minSpan / 2 : 0.5; }
+  const pad = (hi - lo) * 0.1;
+  lo -= pad; hi += pad;
+  if (minSpan && hi - lo < minSpan) {
+    const c = (lo + hi) / 2;
+    lo = c - minSpan / 2; hi = c + minSpan / 2;
+  }
+  return { min: lo, max: hi };
+}
+
+function yScale(cfg, values) {
+  return cfg.y ? { ...cfg.y } : autoY(values, cfg.minSpan);
+}
+
 socket.on('connect', () => {
   document.getElementById('connectionStatus').innerHTML = '<span class="dot green"></span>Conectado';
 });
@@ -101,10 +145,6 @@ function renderDashboard(id) {
   const latest = data[data.length - 1];
 
   const labels = data.map(d => new Date(d._time).toLocaleTimeString());
-  const s1 = data.map(d => d.s1);
-  const s2 = data.map(d => d.s2);
-  const s3 = data.map(d => d.s3);
-  const s4 = data.map(d => d.s4);
 
   // Compativel com dois payloads: o do alarme_esp32 (evento + s1..s4)
   // e o antigo do CNC (run/rt/pu/ho/pr/al/t[]). Campo ausente vira '-'.
@@ -112,6 +152,9 @@ function renderDashboard(id) {
   const evento = latest.evento || '';
   const emAlarme = /TRIGGERED|ALARM_ON|ALARME/.test(evento);
   const timers = Array.isArray(latest.t) ? latest.t.join('/') : '-';
+
+  const cards = SENSORS.map(cfg => `
+      <div class="card"><h3>${cfg.title}</h3><div class="value">${cfg.fmt(latest[cfg.key])}<span class="unit">${cfg.unit}</span></div><canvas id="ch-${cfg.key}"></canvas></div>`).join('');
 
   const html = `
     <div class="status-grid" style="padding: 8px 24px 0">
@@ -123,11 +166,7 @@ function renderDashboard(id) {
       <div class="status-item"><span class="label">Alarme:</span> ${latest.al ?? '-'}</div>
       <div class="status-item"><span class="label">Timers:</span> ${timers}</div>
     </div>
-    <div class="grid">
-      <div class="card"><h3>Sensor 1</h3><div class="value">${latest.s1}</div><canvas id="ch-s1"></canvas></div>
-      <div class="card"><h3>Sensor 2</h3><div class="value">${latest.s2}</div><canvas id="ch-s2"></canvas></div>
-      <div class="card"><h3>Sensor 3</h3><div class="value">${latest.s3}</div><canvas id="ch-s3"></canvas></div>
-      <div class="card"><h3>Sensor 4</h3><div class="value">${(+latest.s4 || 0).toFixed(3)}</div><canvas id="ch-s4"></canvas></div>
+    <div class="grid">${cards}
     </div>
   `;
   document.getElementById('dashboard').innerHTML = html;
@@ -137,19 +176,21 @@ function renderDashboard(id) {
     if (devices[id].charts[key]) devices[id].charts[key].destroy();
   }
 
-  const chartOpts = (id_, label, data, color) => ({
+  const chartOpts = (cfg, values) => ({
     type: 'line',
-    data: { labels, datasets: [{ label, data, borderColor: color, backgroundColor: color + '22', fill: true, tension: 0.3, pointRadius: 0 }] },
+    data: { labels, datasets: [{ label: cfg.title, data: values, borderColor: cfg.color, backgroundColor: cfg.color + '22', fill: true, tension: 0.3, pointRadius: 0 }] },
     options: { responsive: true, maintainAspectRatio: false, animation: false,
       plugins: { legend: { display: false } },
-      scales: { x: { display: false }, y: { ticks: { color: '#64748b' } } }
+      scales: { x: { display: false }, y: { ...yScale(cfg, values), ticks: { color: '#64748b' } } }
     }
   });
 
-  devices[id].charts.s1 = new Chart(document.getElementById('ch-s1'), chartOpts(id, 'S1', s1, '#3b82f6'));
-  devices[id].charts.s2 = new Chart(document.getElementById('ch-s2'), chartOpts(id, 'S2', s2, '#22c55e'));
-  devices[id].charts.s3 = new Chart(document.getElementById('ch-s3'), chartOpts(id, 'S3', s3, '#f59e0b'));
-  devices[id].charts.s4 = new Chart(document.getElementById('ch-s4'), chartOpts(id, 'S4', s4, '#ef4444'));
+  for (const cfg of SENSORS) {
+    devices[id].charts[cfg.key] = new Chart(
+      document.getElementById('ch-' + cfg.key),
+      chartOpts(cfg, series(data, cfg))
+    );
+  }
 }
 
 function updateDashboard(id) {
@@ -159,22 +200,24 @@ function updateDashboard(id) {
   const labels = data.map(d => new Date(d._time).toLocaleTimeString());
 
   // Update charts without full re-render (just update data)
-  for (const key of ['s1', 's2', 's3', 's4']) {
-    const ch = devices[id].charts[key];
+  for (const cfg of SENSORS) {
+    const ch = devices[id].charts[cfg.key];
     if (!ch) continue;
-    const idx = key === 's1' ? 's1' : key === 's2' ? 's2' : key === 's3' ? 's3' : 's4';
-    const values = data.map(d => d[idx]);
+    const values = series(data, cfg);
     ch.data.labels = labels;
     ch.data.datasets[0].data = values;
+    // Recalcula a escala Y (fixa ou automática) a cada atualização
+    const ys = yScale(cfg, values);
+    ch.options.scales.y.min = ys.min;
+    ch.options.scales.y.max = ys.max;
     ch.update('none');
   }
 
   // Update status values
-  document.querySelectorAll('.card canvas').forEach((canvas, i) => {
-    const vals = [latest.s1, latest.s2, latest.s3, (+latest.s4 || 0).toFixed(3)];
-    const parent = canvas.parentElement;
-    const valueEl = parent.querySelector('.value');
-    if (valueEl) valueEl.textContent = vals[i];
+  document.querySelectorAll('.card').forEach((card, i) => {
+    const cfg = SENSORS[i];
+    const valueEl = card.querySelector('.value');
+    if (cfg && valueEl) valueEl.innerHTML = `${cfg.fmt(latest[cfg.key])}<span class="unit">${cfg.unit}</span>`;
   });
 
   // Update status line (antes so era desenhado no render inicial)

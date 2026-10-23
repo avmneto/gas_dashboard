@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const mqtt = require('mqtt');
+const { Pool } = require('pg');
 
 const app = express();
 const server = http.createServer(app);
@@ -18,6 +19,22 @@ const deviceLastSeen = new Map();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
 const TELEGRAM_ENABLED = !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
+
+// Postgres pool for OHLC persistence
+const pgPool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+    })
+  : null;
+
+if (pgPool) {
+  pgPool.on('error', (e) => console.error('PG pool error:', e.message));
+  console.log('Postgres pool initialized');
+} else {
+  console.warn('DATABASE_URL not set — OHLC persistence disabled');
+}
 
 function sendTelegram(text) {
   if (!TELEGRAM_ENABLED) return;
@@ -39,6 +56,19 @@ function sendBootAlarm(deviceId, data) {
   console.log(`Boot alarm sent for ${deviceId}`);
 }
 
+// Upsert OHLC 15-min candle (called ~1/min per metric)
+async function upsertOhlc1m(metric, value, ts = Date.now()) {
+  if (!pgPool) return;
+  try {
+    await pgPool.query(
+      `SELECT public.upsert_ohlc_1m($1, $2, to_timestamp($3/1000.0) AT TIME ZONE 'UTC')`,
+      [metric, value, ts]
+    );
+  } catch (e) {
+    console.error(`OHLC upsert error (${metric}):`, e.message);
+  }
+}
+
 function mqtt_connect() {
   const opts = {
     host: process.env.MQTT_HOST || 'localhost',
@@ -57,7 +87,7 @@ function mqtt_connect() {
     client.subscribe(process.env.MQTT_TOPIC || 'gas_monitor/+/status', { qos: 0 });
   });
 
-  client.on('message', (topic, raw) => {
+  client.on('message', async (topic, raw) => {
     try {
       // Extract device ID from topic: gas_monitor/<device_id>/status
       const parts = topic.split('/');
@@ -85,6 +115,18 @@ function mqtt_connect() {
 
       // Broadcast to all connected browsers
       io.emit('data', data);
+
+      // Persist OHLC (map device fields to metrics)
+      const ts = data._time;
+      // Firmware JÁ publica escalado (main.c:1108-1110): pureza=%, fluxo=m³/h, pressão=bar
+      // NÃO dividir novamente — isso gravava 10×/100× errado no Supabase
+      await Promise.all([
+        Number.isFinite(data.s1) ? upsertOhlc1m('purity', data.s1, ts) : Promise.resolve(),
+        Number.isFinite(data.s2) ? upsertOhlc1m('flow', data.s2, ts) : Promise.resolve(),
+        Number.isFinite(data.s4) ? upsertOhlc1m('pressure', data.s4, ts) : Promise.resolve(),
+      ]);
+      // s3 (dewpoint) is faulty — not persisted
+      // await upsertOhlc1m('dewpoint', data.s3 / 10, ts);
     } catch (e) {
       console.error('Parse error:', e.message);
     }
@@ -114,6 +156,59 @@ app.get('/api/devices', (req, res) => {
     result[id] = history.length > 0 ? history[history.length - 1] : null;
   }
   res.json(result);
+});
+
+// GET /api/history?metric=purity&from=2026-10-20&to=2026-10-22
+// Returns OHLC 15-min candles from Supabase view
+app.get('/api/history', async (req, res) => {
+  if (!pgPool) {
+    return res.status(503).json({ error: 'Persistence not configured' });
+  }
+  const { metric, from, to } = req.query;
+
+  // Whitelist de métricas persistidas (dewpoint não é persistido — sensor s3 defeituoso)
+  const allowedMetrics = ['purity', 'flow', 'pressure'];
+  if (!metric || !allowedMetrics.includes(metric)) {
+    return res.status(400).json({ error: `metric required: ${allowedMetrics.join('|')}` });
+  }
+
+  // Helper: parse ISO 8601 date, retorna null se inválido
+  const parseDate = (s) => {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  // Default: últimas 24h se from/to não fornecidos
+  const now = new Date();
+  const defaultFrom = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+  const dFrom = from ? parseDate(from) : defaultFrom;
+  const dTo = to ? parseDate(to) : now;
+
+  if ((from && !dFrom) || (to && !dTo)) {
+    return res.status(400).json({ error: 'from/to inválidos (use ISO 8601)' });
+  }
+
+  // Se `to` for só data (AAAA-MM-DD), somar 1 dia para inclusivo
+  if (to && /^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    dTo.setDate(dTo.getDate() + 1);
+  }
+
+  try {
+    let sql = `SELECT bucket, open, high, low, close, avg, cnt, bucket_br
+               FROM public.v_ohlc_15m
+               WHERE metric = $1
+                 AND bucket >= $2
+                 AND bucket <= $3
+               ORDER BY bucket ASC
+               LIMIT 10000`;
+    const params = [metric, dFrom, dTo];
+    const { rows } = await pgPool.query(sql, params);
+    res.json({ metric, data: rows });
+  } catch (e) {
+    console.error('History query error:', e.message);
+    res.status(500).json({ error: 'internal' });
+  }
 });
 
 const PORT = parseInt(process.env.PORT || '3000');
