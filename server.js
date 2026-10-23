@@ -21,26 +21,48 @@ const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
 const TELEGRAM_ENABLED = !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
 
 // Postgres pool for OHLC persistence
+function buildPgConfig(url) {
+  // Garante sslmode=require para Supabase (necessário em alguns ambientes)
+  const u = new URL(url);
+  if (!u.searchParams.has('sslmode')) {
+    u.searchParams.set('sslmode', 'require');
+  }
+  // Log sanitizado (sem senha)
+  const sanitized = u.toString().replace(/:([^:@]+)@/, ':****@');
+  console.log('PG target:', sanitized);
+  return {
+    connectionString: u.toString(),
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+    connectionTimeoutMillis: 30000,  // 30s para cold start Supabase free
+    idleTimeoutMillis: 30000,
+    statement_timeout: 15000,
+  };
+}
+
 const pgPool = process.env.DATABASE_URL
-  ? new Pool({
-      connectionString: process.env.DATABASE_URL,
-      ssl: { rejectUnauthorized: false },
-      max: 5,
-      // Timeouts para evitar hang no cold start (Supabase free hiberna)
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      // Query timeout (ms) - evita travar /api/history
-      statement_timeout: 15000,
-    })
+  ? new Pool(buildPgConfig(process.env.DATABASE_URL))
   : null;
 
 if (pgPool) {
   pgPool.on('error', (e) => console.error('PG pool error:', e));
   console.log('Postgres pool initialized');
-  // Warm-up: teste de conexão assíncrono (não bloqueia startup)
-  pgPool.query('SELECT 1')
-    .then(() => console.log('PG warm-up OK'))
-    .catch(e => console.error('PG warm-up failed:', e));
+  // Warm-up com retry (3 tentativas, backoff exponencial)
+  async function warmUp(attempt = 1) {
+    try {
+      await pgPool.query('SELECT 1');
+      console.log('PG warm-up OK');
+    } catch (e) {
+      if (attempt < 3) {
+        const delay = attempt * 2000;
+        console.warn(`PG warm-up failed (attempt ${attempt}/3), retrying in ${delay}ms:`, e.code || e.message);
+        await new Promise(r => setTimeout(r, delay));
+        return warmUp(attempt + 1);
+      }
+      console.error('PG warm-up failed after 3 attempts:', e);
+    }
+  }
+  warmUp();
 } else {
   console.warn('DATABASE_URL not set — OHLC persistence disabled');
 }
@@ -68,13 +90,26 @@ function sendBootAlarm(deviceId, data) {
 // Upsert OHLC 15-min candle (called ~1/min per metric)
 async function upsertOhlc1m(metric, value, ts = Date.now()) {
   if (!pgPool) return;
-  try {
-    await pgPool.query(
-      `SELECT public.upsert_ohlc_1m($1, $2, to_timestamp($3/1000.0) AT TIME ZONE 'UTC')`,
-      [metric, value, ts]
-    );
-  } catch (e) {
-    console.error(`OHLC upsert error (${metric}):`, e);
+  const maxRetries = 2;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await pgPool.query(
+        `SELECT public.upsert_ohlc_1m($1, $2, to_timestamp($3/1000.0) AT TIME ZONE 'UTC')`,
+        [metric, value, ts]
+      );
+      return; // sucesso
+    } catch (e) {
+      const isLast = attempt === maxRetries;
+      const isTransient = e.code === 'ECONNREFUSED' || e.code === 'ETIMEDOUT' || e.code === '08006' || e.code === '08001' || e.code === '57P01';
+      if (!isLast && isTransient) {
+        const delay = attempt * 1000;
+        console.warn(`OHLC upsert (${metric}) transient error, retry ${attempt}/${maxRetries} in ${delay}ms:`, e.code);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      if (isLast) console.error(`OHLC upsert error (${metric}):`, e);
+      throw e;
+    }
   }
 }
 
