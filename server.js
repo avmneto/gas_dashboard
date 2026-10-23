@@ -37,6 +37,7 @@ function buildPgConfig(url) {
     connectionTimeoutMillis: 30000,  // 30s para cold start Supabase free
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
+    family: 4,  // Força IPv4 (evita ENETUNREACH em IPv6 no Render free → Supabase)
   };
 }
 
