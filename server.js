@@ -36,27 +36,37 @@ function buildPgConfig(url) {
   // Resolve hostname para IPv4 explicitamente (evita ENETUNREACH no Render free)
   const hostname = u.hostname;
   const port = parseInt(u.port || '5432');
+  const database = u.pathname.slice(1) || 'postgres';
+  const user = u.username;
+  const password = u.password;
+  const baseConfig = {
+    database,
+    user,
+    password,
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+    connectionTimeoutMillis: 30000,
+    idleTimeoutMillis: 30000,
+    statement_timeout: 15000,
+  };
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     dns.lookup(hostname, { family: 4 }, (err, ipv4) => {
       if (err) {
-        console.error('DNS IPv4 lookup failed:', err);
-        reject(err);
+        // ENOTFOUND = sem registro A (só IPv6) → fallback para hostname (usa IPv6 do SO)
+        // ENETUNREACH = IPv6 não roteia → tentar pooler se configurado
+        if (err.code === 'ENOTFOUND') {
+          console.warn('DNS IPv4 lookup ENOTFOUND (sem registro A), usando hostname direto:', err.message);
+          resolve({ ...baseConfig, host: hostname, port });
+        } else {
+          console.error('DNS IPv4 lookup failed:', err);
+          // Fallback seguro: usa hostname mesmo assim
+          resolve({ ...baseConfig, host: hostname, port });
+        }
         return;
       }
       console.log('PG resolved IPv4:', ipv4);
-      resolve({
-        host: ipv4,
-        port,
-        database: u.pathname.slice(1) || 'postgres',
-        user: u.username,
-        password: u.password,
-        ssl: { rejectUnauthorized: false },
-        max: 5,
-        connectionTimeoutMillis: 30000,
-        idleTimeoutMillis: 30000,
-        statement_timeout: 15000,
-      });
+      resolve({ ...baseConfig, host: ipv4, port });
     });
   });
 }
