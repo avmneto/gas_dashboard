@@ -66,9 +66,10 @@ function buildPgConfig(url) {
   }
 
   // SSL config: pooler PRECISA de servername (SNI) para ENOIDENTIFIER
+  // checkServerIdentity: () => undefined ignora validação de certificado self-signed
   const sslConfig = isPooler
-    ? { rejectUnauthorized: false, servername: sniHostname }
-    : { rejectUnauthorized: false };
+    ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
+    : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
 
   // Retorna config para Pool: usa connectionString original + ssl override
   // Isso garante que o pg use a connection string para host/port/database/user
