@@ -26,12 +26,21 @@ const pgPool = process.env.DATABASE_URL
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       max: 5,
+      // Timeouts para evitar hang no cold start (Supabase free hiberna)
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      // Query timeout (ms) - evita travar /api/history
+      statement_timeout: 15000,
     })
   : null;
 
 if (pgPool) {
-  pgPool.on('error', (e) => console.error('PG pool error:', e.message));
+  pgPool.on('error', (e) => console.error('PG pool error:', e));
   console.log('Postgres pool initialized');
+  // Warm-up: teste de conexão assíncrono (não bloqueia startup)
+  pgPool.query('SELECT 1')
+    .then(() => console.log('PG warm-up OK'))
+    .catch(e => console.error('PG warm-up failed:', e));
 } else {
   console.warn('DATABASE_URL not set — OHLC persistence disabled');
 }
@@ -65,7 +74,7 @@ async function upsertOhlc1m(metric, value, ts = Date.now()) {
       [metric, value, ts]
     );
   } catch (e) {
-    console.error(`OHLC upsert error (${metric}):`, e.message);
+    console.error(`OHLC upsert error (${metric}):`, e);
   }
 }
 
@@ -206,7 +215,7 @@ app.get('/api/history', async (req, res) => {
     const { rows } = await pgPool.query(sql, params);
     res.json({ metric, data: rows });
   } catch (e) {
-    console.error('History query error:', e.message);
+    console.error('History query error:', e);
     res.status(500).json({ error: 'internal' });
   }
 });
