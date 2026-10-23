@@ -42,9 +42,21 @@ function buildPgConfig(url) {
   // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
 
+  // SNI para pooler: usa PROJECT REF (extraído do direct hostname db.<ref>.supabase.co)
+  // O pooler Supabase espera o project ref como SNI, não o pooler hostname
+  let sniHostname = hostname;
+  if (isPooler) {
+    // Tenta extrair project ref da env var ou inferir do hostname original
+    // Se DATABASE_URL for pooler, não temos o direct hostname aqui.
+    // Fallback: usa o hostname do pooler mesmo, mas alguns pools precisam do ref.
+    // Para Supabase, o project ref costuma ser a parte antes de .supabase.co no direct.
+    // Se não tiver, usa hostname do pooler.
+    sniHostname = process.env.PG_SNI_HOSTNAME || hostname;
+  }
+
   // SSL config: pooler PRECISA de servername (SNI) para ENOIDENTIFIER
   const sslConfig = isPooler
-    ? { rejectUnauthorized: false, servername: hostname }
+    ? { rejectUnauthorized: false, servername: sniHostname }
     : { rejectUnauthorized: false };
 
   const baseConfig = {
@@ -61,7 +73,7 @@ function buildPgConfig(url) {
   // Para pooler: SEMPRE usa hostname (tem IPv4 + SNI no TLS)
   // Para direct: tenta IPv4, fallback para hostname
   if (isPooler) {
-    console.log('PG pooler detectado — usando hostname direto (SNI required)');
+    console.log('PG pooler detectado — usando hostname direto (SNI:', sniHostname + ')');
     return Promise.resolve({ ...baseConfig, host: hostname, port });
   }
 
