@@ -30,11 +30,17 @@ function buildPgConfig(url) {
   // Log sanitizado (sem senha)
   const sanitized = u.toString().replace(/:([^:@]+)@/, ':****@');
   console.log('PG target:', sanitized);
+  // Usa config explícito (host/port) em vez de connectionString
+  // para garantir que family: 4 (IPv4) seja respeitado
   return {
-    connectionString: u.toString(),
+    host: u.hostname,
+    port: parseInt(u.port || '5432'),
+    database: u.pathname.slice(1) || 'postgres',
+    user: u.username,
+    password: u.password,
     ssl: { rejectUnauthorized: false },
     max: 5,
-    connectionTimeoutMillis: 30000,  // 30s para cold start Supabase free
+    connectionTimeoutMillis: 30000,
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
     family: 4,  // Força IPv4 (evita ENETUNREACH em IPv6 no Render free → Supabase)
