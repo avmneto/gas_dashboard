@@ -21,6 +21,8 @@ const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID;
 const TELEGRAM_ENABLED = !!(TELEGRAM_TOKEN && TELEGRAM_CHAT);
 
 // Postgres pool for OHLC persistence
+const dns = require('dns');
+
 function buildPgConfig(url) {
   // Garante sslmode=require para Supabase (necessário em alguns ambientes)
   const u = new URL(url);
@@ -30,49 +32,69 @@ function buildPgConfig(url) {
   // Log sanitizado (sem senha)
   const sanitized = u.toString().replace(/:([^:@]+)@/, ':****@');
   console.log('PG target:', sanitized);
-  // Usa config explícito (host/port) em vez de connectionString
-  // para garantir que family: 4 (IPv4) seja respeitado
-  return {
-    host: u.hostname,
-    port: parseInt(u.port || '5432'),
-    database: u.pathname.slice(1) || 'postgres',
-    user: u.username,
-    password: u.password,
-    ssl: { rejectUnauthorized: false },
-    max: 5,
-    connectionTimeoutMillis: 30000,
-    idleTimeoutMillis: 30000,
-    statement_timeout: 15000,
-    family: 4,  // Força IPv4 (evita ENETUNREACH em IPv6 no Render free → Supabase)
-  };
-}
 
-const pgPool = process.env.DATABASE_URL
-  ? new Pool(buildPgConfig(process.env.DATABASE_URL))
-  : null;
+  // Resolve hostname para IPv4 explicitamente (evita ENETUNREACH no Render free)
+  const hostname = u.hostname;
+  const port = parseInt(u.port || '5432');
 
-if (pgPool) {
-  pgPool.on('error', (e) => console.error('PG pool error:', e));
-  console.log('Postgres pool initialized');
-  // Warm-up com retry (3 tentativas, backoff exponencial)
-  async function warmUp(attempt = 1) {
-    try {
-      await pgPool.query('SELECT 1');
-      console.log('PG warm-up OK');
-    } catch (e) {
-      if (attempt < 3) {
-        const delay = attempt * 2000;
-        console.warn(`PG warm-up failed (attempt ${attempt}/3), retrying in ${delay}ms:`, e.code || e.message);
-        await new Promise(r => setTimeout(r, delay));
-        return warmUp(attempt + 1);
+  return new Promise((resolve, reject) => {
+    dns.lookup(hostname, { family: 4 }, (err, ipv4) => {
+      if (err) {
+        console.error('DNS IPv4 lookup failed:', err);
+        reject(err);
+        return;
       }
-      console.error('PG warm-up failed after 3 attempts:', e);
-    }
-  }
-  warmUp();
-} else {
-  console.warn('DATABASE_URL not set — OHLC persistence disabled');
+      console.log('PG resolved IPv4:', ipv4);
+      resolve({
+        host: ipv4,
+        port,
+        database: u.pathname.slice(1) || 'postgres',
+        user: u.username,
+        password: u.password,
+        ssl: { rejectUnauthorized: false },
+        max: 5,
+        connectionTimeoutMillis: 30000,
+        idleTimeoutMillis: 30000,
+        statement_timeout: 15000,
+      });
+    });
+  });
 }
+
+// Inicialização assíncrona do pool
+let pgPool = null;
+async function initPgPool() {
+  if (!process.env.DATABASE_URL) {
+    console.warn('DATABASE_URL not set — OHLC persistence disabled');
+    return;
+  }
+  try {
+    const config = await buildPgConfig(process.env.DATABASE_URL);
+    pgPool = new Pool(config);
+    pgPool.on('error', (e) => console.error('PG pool error:', e));
+    console.log('Postgres pool initialized');
+    // Warm-up com retry (3 tentativas, backoff exponencial)
+    async function warmUp(attempt = 1) {
+      try {
+        await pgPool.query('SELECT 1');
+        console.log('PG warm-up OK');
+      } catch (e) {
+        if (attempt < 3) {
+          const delay = attempt * 2000;
+          console.warn(`PG warm-up failed (attempt ${attempt}/3), retrying in ${delay}ms:`, e.code || e.message);
+          await new Promise(r => setTimeout(r, delay));
+          return warmUp(attempt + 1);
+        }
+        console.error('PG warm-up failed after 3 attempts:', e);
+      }
+    }
+    warmUp();
+  } catch (e) {
+    console.error('PG pool init failed:', e);
+  }
+}
+
+initPgPool();
 
 function sendTelegram(text) {
   if (!TELEGRAM_ENABLED) return;
