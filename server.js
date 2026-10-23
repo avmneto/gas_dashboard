@@ -32,6 +32,9 @@ function buildPgConfig(url) {
 
   const hostname = u.hostname;
   const port = parseInt(u.port || '5432');
+  const database = u.pathname.slice(1) || 'postgres';
+  const user = u.username;
+  const password = u.password;
 
   // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
@@ -54,28 +57,23 @@ function buildPgConfig(url) {
     ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
     : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
 
-  // Para pooler: usa sslmode=allow na connection string (TLS se disponível, não falha no cert)
-  // Para direct: mantém sslmode=require
-  if (isPooler) {
-    u.searchParams.set('sslmode', 'allow');
-    console.log('PG SSL MODE SET: allow (pooler)');
-  } else if (!u.searchParams.has('sslmode')) {
-    u.searchParams.set('sslmode', 'require');
-    console.log('PG SSL MODE SET: require (direct)');
-  }
-
-  // Log final da connection string para debug
-  const finalUrl = u.toString();
-  console.log('PG FINAL TARGET:', finalUrl.replace(/:([^:@]+)@/, ':****@'));
-
-  return {
-    connectionString: finalUrl,
+  // NÃO usa connectionString + sslmode. Usa config explícito (host/port/database/user/password + ssl object)
+  // Isso dá controle total sobre SSL e evita conflito com sslmode na connection string
+  const config = {
+    host: hostname,
+    port,
+    database,
+    user,
+    password,
     ssl: sslConfig,
     max: 5,
     connectionTimeoutMillis: 30000,
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
   };
+
+  console.log('PG CONFIG: host=' + hostname + ' port=' + port + ' db=' + database + ' ssl=' + (isPooler ? 'pooler' : 'direct'));
+  return config;
 }
 
 // Inicialização assíncrona do pool
