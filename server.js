@@ -39,16 +39,30 @@ function buildPgConfig(url) {
   // Detecta se é pooler (porta 6543 ou hostname contém pooler.supabase.com)
   const isPooler = port === 6543 || hostname.includes('pooler.supabase.com');
 
-  // SNI para pooler: usa DIRECT HOSTNAME (db.<ref>.supabase.co)
+  // Para pooler Supabase: username deve ser "postgres.<project-ref>"
+  // Extrai project-ref do hostname direto (db.<ref>.supabase.co) ou da env var
+  let pgUser = user;
   let sniHostname = hostname;
+  
   if (isPooler) {
-    const envSni = process.env.PG_SNI_HOSTNAME;
-    if (envSni) {
-      sniHostname = envSni.includes('.') ? envSni : `db.${envSni}.supabase.co`;
-    } else {
-      sniHostname = hostname;
+    // Extrai project-ref: pode vir de PG_SNI_HOSTNAME ou inferido do hostname
+    let projectRef = process.env.PG_SNI_HOSTNAME;
+    if (projectRef && projectRef.includes('.')) {
+      // Se for hostname completo db.xxx.supabase.co, extrai o ref
+      projectRef = projectRef.replace('db.', '').replace('.supabase.co', '');
     }
-    console.log('PG pooler SNI resolvido:', sniHostname);
+    // Se não tem env var, tenta extrair do hostname do pooler (não confiável)
+    // Default: usa o ref conhecido do projeto
+    if (!projectRef || !projectRef.includes('.')) {
+      projectRef = projectRef || 'lakadqmwjwmwlzqgzofi';
+    }
+    
+    // Username para pooler: postgres.<project-ref>
+    pgUser = `postgres.${projectRef}`;
+    
+    // SNI para pooler: usa o hostname do pooler (não o direct)
+    sniHostname = hostname;
+    console.log('PG pooler config: user=' + pgUser + ', SNI=' + sniHostname);
   }
 
   // SSL config function: chamada no momento da conexão para controle total do handshake TLS
@@ -63,9 +77,10 @@ function buildPgConfig(url) {
         checkServerIdentity: () => undefined,
       });
 
-  // Remove sslmode da connection string
+  // Remove sslmode da connection string e reconstrói com usuário correto
   const u2 = new URL(url);
   u2.searchParams.delete('sslmode');
+  u2.username = pgUser;
   const connectionStringNoSslMode = u2.toString();
 
   const config = {
@@ -77,7 +92,7 @@ function buildPgConfig(url) {
     statement_timeout: 15000,
   };
 
-  console.log('PG CONFIG: connectionString (no sslmode) + ssl factory (pooler=' + isPooler + ')');
+  console.log('PG CONFIG: user=' + pgUser + ' (pooler=' + isPooler + ') ssl factory');
   return config;
 }
 
