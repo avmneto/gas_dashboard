@@ -51,29 +51,33 @@ function buildPgConfig(url) {
     console.log('PG pooler SNI resolvido:', sniHostname);
   }
 
-  // SSL config: SNI para pooler, sem validar certificado (self-signed no pooler)
-  // checkServerIdentity: () => undefined força bypass total da validação de certificado
-  const sslConfig = isPooler
-    ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
-    : { rejectUnauthorized: false, checkServerIdentity: () => undefined };
+  // SSL config function: chamada no momento da conexão para controle total do handshake TLS
+  const sslFactory = isPooler
+    ? () => ({
+        rejectUnauthorized: false,
+        servername: sniHostname,
+        checkServerIdentity: () => undefined,
+      })
+    : () => ({
+        rejectUnauthorized: false,
+        checkServerIdentity: () => undefined,
+      });
 
-  // Remove sslmode da connection string (deixa só o objeto ssl controlar TLS)
+  // Remove sslmode da connection string
   const u2 = new URL(url);
   u2.searchParams.delete('sslmode');
   const connectionStringNoSslMode = u2.toString();
 
   const config = {
     connectionString: connectionStringNoSslMode,
-    ssl: isPooler
-      ? { rejectUnauthorized: false, servername: sniHostname, checkServerIdentity: () => undefined }
-      : { rejectUnauthorized: false, checkServerIdentity: () => undefined },
+    ssl: sslFactory,
     max: 5,
     connectionTimeoutMillis: 30000,
     idleTimeoutMillis: 30000,
     statement_timeout: 15000,
   };
 
-  console.log('PG CONFIG: connectionString (no sslmode) + ssl object (pooler=' + isPooler + ')');
+  console.log('PG CONFIG: connectionString (no sslmode) + ssl factory (pooler=' + isPooler + ')');
   return config;
 }
 
